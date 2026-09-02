@@ -56,6 +56,11 @@ export default function RootLayout() {
           <StatusBar style="light" />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
+            {/* Habit create/edit are pushed over the tabs rather than nested
+                in them, so the form owns the full screen and Back returns to
+                wherever it was opened from. */}
+            <Stack.Screen name="habit/new" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="habit/[id]" />
           </Stack>
         </ThemeProvider>
       </SafeAreaProvider>

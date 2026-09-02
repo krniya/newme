@@ -1,0 +1,1 @@
+ALTER TABLE `habits` ADD `due_date` text;

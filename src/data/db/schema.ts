@@ -65,6 +65,9 @@ export const habits = sqliteTable(
     /** JSON, shape depends on scheduleType. See domain `Schedule`. */
     scheduleConfig: text('schedule_config').notNull().default('{}'),
 
+    /** Tasks only: the day a one-off is due. `YYYY-MM-DD`. */
+    dueDate: text('due_date'),
+
     ritualId: text('ritual_id').references(() => rituals.id),
     ritualOrder: integer('ritual_order'),
 

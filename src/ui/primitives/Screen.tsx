@@ -5,7 +5,8 @@ import { useTheme } from '../theme';
 import { space } from '../tokens';
 
 export interface ScreenProps {
-  children: ReactNode;
+  /** Optional so a loading route can render a bare themed background. */
+  children?: ReactNode;
   scroll?: boolean;
   padded?: boolean;
   style?: ViewStyle;

@@ -11,10 +11,12 @@ const root = import.meta.dirname;
  */
 export default defineConfig({
   test: {
-    include: ['src/domain/**/*.test.ts'],
+    // `src/lib` is included too: it is plain TypeScript that runs in Node.
+    // The data and UI layers need a device, and are covered by Maestro later.
+    include: ['src/domain/**/*.test.ts', 'src/lib/**/*.test.ts'],
     environment: 'node',
     coverage: {
-      include: ['src/domain/**/*.ts'],
+      include: ['src/domain/**/*.ts', 'src/lib/**/*.ts'],
       exclude: ['src/domain/**/*.test.ts', 'src/domain/**/index.ts'],
       thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 },
     },

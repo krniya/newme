@@ -1,26 +1,24 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { ATTRIBUTES, type Attribute, type Difficulty } from '@/domain/types';
 import {
-  ATTRIBUTES,
-  type Attribute,
-  type Difficulty,
-  type MomentumState,
-  applyDayMomentum,
-  attributeLevelFromXp,
-  awardXp,
-  currentCapRate,
-  levelProgress,
-  momentumState,
-  tierForLevel,
-  tierName,
-  totalXpForAttributeLevel,
-} from '@/domain';
+  selectAttributes,
+  selectDaily,
+  selectLevel,
+  selectMomentumState,
+  selectTier,
+} from '@/domain/events/state';
+import { currentCapRate } from '@/domain/xp/dailyCap';
+import { tierName } from '@/domain/xp/curve';
+import { localDateOf } from '@/domain/time/localDate';
+import { useProgression, type CompletionOutcome } from '@/features/progression/progressionStore';
 import {
   AttributeBar,
   Button,
   Card,
   Divider,
+  EmptyState,
   ProgressBar,
   Screen,
   StatPill,
@@ -31,84 +29,92 @@ import { attributeColors, space } from '@/ui/tokens';
 const DIFFICULTIES: Difficulty[] = ['trivial', 'easy', 'medium', 'hard', 'epic'];
 
 /**
- * Phase 0 engine harness.
+ * M1 acceptance harness.
  *
- * Not the real Character screen — this is a sandbox that drives the domain
- * engines with fake input so the maths can be checked on a physical device,
- * not just in Vitest. It proves the pieces the whole product rests on: the
- * level curve, the multiplier stack, the daily soft cap, attribute tracks,
- * momentum bands and Rescue Mode.
+ * Not the real Character screen — this drives the actual event spine so the
+ * whole path can be checked on a physical device: append to SQLite, fold in
+ * memory, persist projections, survive a restart, and rebuild identically.
  *
- * Replaced in Phase 1 by the real screen, which reads from SQLite.
+ * Everything here is real. Nothing is faked. Replaced in M6 by the screen
+ * that reads from live habits instead of these buttons.
  */
 export default function CharacterScreen() {
-  const [xp, setXp] = useState(0);
-  const [gold, setGold] = useState(0);
-  const [rawToday, setRawToday] = useState(0);
-  const [streak, setStreak] = useState(0);
-  const [momentum, setMomentum] = useState(60);
-  const [attrXp, setAttrXp] = useState<Record<Attribute, number>>({
-    vitality: 0,
-    focus: 0,
-    discipline: 0,
-    spirit: 0,
-    bond: 0,
-  });
-  const [lastAward, setLastAward] = useState<string | null>(null);
+  const { state, ready, saveError, initialize, completeHabit, undoCompletion, rebuild } =
+    useProgression();
 
-  const state: MomentumState = momentumState(momentum);
-  const progress = useMemo(() => levelProgress(xp), [xp]);
-  const tier = tierForLevel(progress.level);
+  const [last, setLast] = useState<(CompletionOutcome & { habitId: string }) | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const complete = (difficulty: Difficulty, attribute: Attribute) => {
-    const award = awardXp(difficulty, {
-      streak,
-      plannedAhead: true,
-      inWindow: true,
-      hasEvidence: false,
-      momentumState: state,
-      rawSoFarToday: rawToday,
-    });
+  useEffect(() => {
+    void initialize();
+  }, [initialize]);
 
-    setXp((x) => x + award.banked);
-    setGold((g) => g + award.gold);
-    setRawToday((r) => r + award.raw);
-    setStreak((s) => s + 1);
-    setMomentum((m) => applyDayMomentum(m, { itemCompleted: 1 }));
-    setAttrXp((prev) => ({ ...prev, [attribute]: prev[attribute] + award.banked }));
-
-    const bonuses = award.breakdown.map((b) => b.label).join(', ');
-    setLastAward(
-      `${difficulty} → +${award.banked} XP` +
-        (award.banked !== award.raw ? ` (capped from ${award.raw})` : '') +
-        (bonuses ? ` · ${bonuses}` : ''),
+  if (!ready) {
+    return (
+      <Screen>
+        <EmptyState title="Rebuilding from your event log…" />
+      </Screen>
     );
+  }
+
+  const level = selectLevel(state);
+  const tier = selectTier(state);
+  const momentum = selectMomentumState(state);
+  const today = selectDaily(state, localDateOf(new Date()));
+
+  const onComplete = async (difficulty: Difficulty, attribute: Attribute) => {
+    setBusy(true);
+    try {
+      const habitId = `harness-${attribute}`;
+      const outcome = await completeHabit({
+        habitId,
+        difficulty,
+        attributes: [attribute],
+        plannedAhead: true,
+        inWindow: true,
+        scheduledToday: true,
+      });
+      setLast({ ...outcome, habitId });
+      setNote(
+        `${difficulty} → +${outcome.xpGained} XP, +${outcome.goldGained}g` +
+          (outcome.leveledUp ? ` · LEVEL ${outcome.newLevel}` : ''),
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const missDay = () => {
-    setMomentum((m) => applyDayMomentum(m, { itemMissed: 3 }));
-    setStreak(0);
-    setLastAward('Missed 3 items — momentum down, XP untouched');
+  const onUndo = async () => {
+    if (!last) return;
+    setBusy(true);
+    try {
+      await undoCompletion(last.habitId, last.eventId);
+      setNote('Undone — the completion was erased, not subtracted');
+      setLast(null);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const reset = () => {
-    setXp(0);
-    setGold(0);
-    setRawToday(0);
-    setStreak(0);
-    setMomentum(60);
-    setAttrXp({ vitality: 0, focus: 0, discipline: 0, spirit: 0, bond: 0 });
-    setLastAward(null);
+  const onRebuild = async () => {
+    setBusy(true);
+    try {
+      await rebuild();
+      setNote('Rebuilt every projection from the log');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <Screen>
       <View style={styles.header}>
         <Text variant="caption" tone="muted">
-          PHASE 0 · ENGINE HARNESS
+          M1 · EVENT SPINE
         </Text>
         <Text variant="display" numeric>
-          Level {progress.level}
+          Level {level.level}
         </Text>
         <Text variant="label" tone="accent">
           Tier {tier} · {tierName(tier)}
@@ -117,33 +123,34 @@ export default function CharacterScreen() {
 
       <Card>
         <ProgressBar
-          fraction={progress.fraction}
+          fraction={level.fraction}
           height={10}
-          accessibilityLabel={`Level ${progress.level}, ${progress.xpIntoLevel} of ${progress.xpForLevel} XP`}
+          accessibilityLabel={`Level ${level.level}, ${level.xpIntoLevel} of ${level.xpForLevel} XP`}
         />
         <View style={styles.spread}>
           <Text variant="caption" tone="muted" numeric>
-            {progress.xpIntoLevel} / {progress.xpForLevel} XP
+            {level.xpIntoLevel} / {level.xpForLevel} XP
           </Text>
           <Text variant="caption" tone="muted" numeric>
-            {xp} total
+            {state.eventCount} events
           </Text>
         </View>
       </Card>
 
       <View style={styles.pills}>
-        <StatPill label="Gold" value={gold} />
-        <StatPill label="Streak" value={`${streak}d`} />
+        <StatPill label="Gold" value={state.gold} />
+        <StatPill label="Momentum" value={state.momentum} />
+        <StatPill label="State" value={momentum} />
+        <StatPill label="Freezes" value={state.freezeTokens} />
         <StatPill
-          label="Momentum"
-          value={momentum}
-          color={state === 'dormant' || state === 'fading' ? undefined : attributeColors.bond}
+          label="Today raw"
+          value={today.rawXp}
+          color={currentCapRate(today.rawXp) < 1 ? attributeColors.vitality : undefined}
         />
-        <StatPill label="State" value={state} />
-        <StatPill label="Cap rate" value={`${Math.round(currentCapRate(rawToday) * 100)}%`} />
+        <StatPill label="Cap" value={`${Math.round(currentCapRate(today.rawXp) * 100)}%`} />
       </View>
 
-      {state === 'dormant' ? (
+      {momentum === 'dormant' ? (
         <Card raised>
           <Text variant="heading">Let&apos;s just do this one.</Text>
           <Text variant="body" tone="muted">
@@ -156,28 +163,21 @@ export default function CharacterScreen() {
       <Card>
         <Text variant="heading">Attributes</Text>
         <View style={styles.attributes}>
-          {ATTRIBUTES.map((attribute) => {
-            const value = attrXp[attribute];
-            const level = attributeLevelFromXp(value);
-            const floor = totalXpForAttributeLevel(level);
-            const ceiling = totalXpForAttributeLevel(level + 1);
-            const fraction = ceiling > floor ? (value - floor) / (ceiling - floor) : 0;
-            return (
-              <AttributeBar
-                key={attribute}
-                attribute={attribute}
-                level={level}
-                fraction={fraction}
-              />
-            );
-          })}
+          {selectAttributes(state).map((attribute) => (
+            <AttributeBar
+              key={attribute.attribute}
+              attribute={attribute.attribute}
+              level={attribute.level}
+              fraction={attribute.fraction}
+            />
+          ))}
         </View>
       </Card>
 
       <Card>
         <Text variant="heading">Complete something</Text>
         <Text variant="caption" tone="muted">
-          Awards assume planned-ahead and in-window bonuses.
+          Writes a real event to SQLite. Kill and reopen the app — it comes back.
         </Text>
         <View style={styles.buttons}>
           {DIFFICULTIES.map((difficulty, i) => (
@@ -185,26 +185,50 @@ export default function CharacterScreen() {
               key={difficulty}
               label={difficulty}
               variant="secondary"
-              onPress={() => complete(difficulty, ATTRIBUTES[i % ATTRIBUTES.length]!)}
+              disabled={busy}
+              onPress={() => void onComplete(difficulty, ATTRIBUTES[i % ATTRIBUTES.length]!)}
               style={styles.grow}
             />
           ))}
         </View>
 
-        {lastAward ? (
+        {note ? (
           <>
             <Divider style={styles.divider} />
             <Text variant="caption" tone="secondary">
-              {lastAward}
+              {note}
             </Text>
           </>
         ) : null}
       </Card>
 
       <View style={styles.buttons}>
-        <Button label="Miss a day" variant="ghost" onPress={missDay} style={styles.grow} />
-        <Button label="Reset" variant="ghost" onPress={reset} style={styles.grow} />
+        <Button
+          label="Undo last"
+          variant="ghost"
+          disabled={busy || !last}
+          onPress={() => void onUndo()}
+          style={styles.grow}
+        />
+        <Button
+          label="Rebuild"
+          variant="ghost"
+          disabled={busy}
+          onPress={() => void onRebuild()}
+          style={styles.grow}
+        />
       </View>
+
+      {saveError ? (
+        <Card>
+          <Text variant="label" tone="caution">
+            Projection save failed
+          </Text>
+          <Text variant="caption" tone="muted">
+            Your events are safe — the cache rebuilds on next launch. {saveError}
+          </Text>
+        </Card>
+      ) : null}
     </Screen>
   );
 }

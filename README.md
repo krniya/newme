@@ -10,20 +10,26 @@ decision here, and code comments reference its sections.
 
 ---
 
-## Status: Phase 0 complete
+## Status: Phase 0 complete · Phase 1 M1 (event spine) complete
 
-| Phase 0 exit criterion | State |
+| Exit criterion | State |
 |---|---|
+| **Phase 0** | |
 | Expo app scaffold, TypeScript strict, expo-router | done |
 | Design tokens + UI primitives | done — 11 primitives |
 | Drizzle schema v1 + migrations | done — 11 tables, `0000_init` |
-| Domain engines, fully unit-tested, **before any UI** | done — 161 tests |
-| `npm test` covers the progression spec in §5 | done |
+| Domain engines, fully unit-tested, **before any UI** | done |
 | Dev build installed on a physical device | **not done — needs your hardware** (see below) |
+| **M1 · event spine** | |
+| Event log, reducer, `rebuildProjections()` | done |
+| Replay of ~3 years of use in <1s | done — 50k events in ~166ms |
+| Deterministic replay, golden state | done — 213 tests |
 
-Phase 1 (the real Today screen, habit CRUD, event log, backup subsystem) has not started.
-The Today / Habits tabs are placeholders; the Character and Insights tabs are Phase 0 harnesses
-that drive the real domain engines with fake input so the maths can be sanity-checked on a device.
+The Today / Habits tabs are still placeholders. The **Character tab is the M1 acceptance
+harness**: it drives the real spine end to end — appends events to SQLite, folds them in memory,
+persists projections, and survives a restart. Nothing on it is faked.
+
+Next up is M2 (habit CRUD). See [the plan](#next-milestones).
 
 ---
 
@@ -65,10 +71,34 @@ src/
     scheduling/         "owed today?" vs "available today?"
     streak/             streak resolution, freezes, repair
     insights/           automaticity meter
-  data/db/              Drizzle schema, migrations, client
+    events/             event types, the reducer, projection state  ← the spine
+  data/
+    db/                 Drizzle schema, migrations, client
+    repos/              append-only event writer
+    projections/        rebuild + save, derived from the log
+  features/             app services (progression store)
+  lib/                  uuidv7 and other impure helpers
   ui/                   tokens, theme, primitives
 docs/                   the spec
 ```
+
+### How progression works
+
+Nothing stores XP, gold, streaks or momentum as truth. An **append-only event log** is the
+source of truth, and everything else is a projection rebuilt from it (spec §8.2).
+
+An event records *what happened* — "a medium Vitality habit was done, in its window, planned
+the night before" — never *what it was worth*. That is what lets the level curve be retuned
+years from now and replayed without corrupting history. Difficulty and attributes are
+snapshotted, though, so editing a habit from Easy to Epic can't retroactively inflate a year of
+completions.
+
+Replay never reads habit definitions. The daily rollover resolves schedules once and records its
+conclusions in `day.closed`, so an imported backup folds correctly even if the habits it
+references have since been edited or deleted.
+
+Undo appends a compensating event and rebuilds, rather than subtracting XP — progress stays
+monotonic, and the undone completion leaves no trace in the daily cap either.
 
 ### The one rule that matters
 
@@ -89,19 +119,17 @@ entire progression curve. Changing `LEVEL_CURVE_K` or `LEVEL_CURVE_E` retroactiv
 user's level, because levels are derived rather than stored. The test exists so that can never
 happen by accident — it will always surface as an explicit diff.
 
-## Next: Phase 1
+## Next milestones
 
-In build order:
-
-1. Event log + reducer + `rebuildProjections()`
-2. Habit CRUD with implementation-intention fields
-3. Today screen: timeline, one-tap check-off, undo snackbar
-4. Rituals + Ritual Player
-5. Local notifications with the rolling 7-day window scheduler
-6. **Backup subsystem** — snapshots, `.newme` export, import with both modes, round-trip
+1. ~~**M1** Event log + reducer + `rebuildProjections()`~~ ✅
+2. **M2** Habit CRUD with implementation-intention fields
+3. **M3** Today screen: timeline, one-tap check-off, undo snackbar, daily rollover
+4. **M4** Rituals + Ritual Player + the rolling 7-day notification scheduler
+5. **M5** **Backup subsystem** — snapshots, `.newme` export, import with both modes, round-trip
    property test. Ships in the MVP, not later: the moment there are 30 days of real history in
    the app, losing it becomes unacceptable, and a backup system retro-fitted onto a schema that
    never anticipated it is painful.
+6. **M6** Character screen, onboarding, gold and user-defined rewards
 
 Phase 1 is done when you have used it daily for 14 days *and* have wiped the app, restored from a
 `.newme` file, and verified your level and streaks came back identical.
